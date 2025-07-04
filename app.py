@@ -27,6 +27,75 @@ load_dotenv()
 co = cohere.Client(os.getenv("COHERE_API_KEY"))
 os.environ["HUGGINGFACEHUB_API_TOKEN"] = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
+st.markdown(
+    """
+    <style>
+    /* Entire App Background - Vibrant Gradient */
+    .stApp {
+        background: linear-gradient(135deg, #ff9a9e 0%, #fad0c4 50%, #fad0c4 100%);
+        color: #333333;
+        font-family: 'Segoe UI', sans-serif;
+    }
+
+    /* Input Fields Styling */
+    .stTextInput > div > div > input {
+        background-color: #fff5f8;
+        border: 2px solid #ff6f91;
+        border-radius: 8px;
+        padding: 8px;
+        color: #333333;
+    }
+
+    /* Button Styling */
+    button[kind="primary"] {
+        background-color: #ff6f91;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: bold;
+        transition: background-color 0.3s ease;
+    }
+    button[kind="primary"]:hover {
+        background-color: #ff3e6c;
+    }
+
+    /* Success Message Styling */
+    .stAlert {
+        background-color: #c1f0dc !important;
+        border-left: 5px solid #28a745 !important;
+        color: #155724 !important;
+    }
+
+    /* Title Styling */
+    h1 {
+        color: #ff6f91;
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+    }
+    
+    /* Style for all buttons */
+    div.stButton > button {
+        background: linear-gradient(90deg, #ff6f91 0%, #ff9472 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: bold;
+        cursor: pointer;
+        transition: 0.3s;
+    }
+
+    /* Hover effect for button */
+    div.stButton > button:hover {
+        background: linear-gradient(90deg, #ff3e6c 0%, #ff6f91 100%);
+    }
+    
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
 # Extract video ID
 def extract_video_id(url_or_id):
     if len(url_or_id) == 11 and re.match(r'^[a-zA-Z0-9_-]+$', url_or_id):
@@ -36,15 +105,18 @@ def extract_video_id(url_or_id):
         return match.group(1)
     return None
 
+
 # Format documents function
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
+
 
 # Streamlit UI
 st.title("🎬 YouTube RAG Assistant with Chain Concept")
 
 video_url = st.text_input("Enter YouTube Video URL (with transcript):")
 question = st.text_input("Ask a question based on the video content:")
+generate_button = st.button("💡 Generate Answer")
 
 if video_url:
     video_id = extract_video_id(video_url)
@@ -66,26 +138,22 @@ if video_url:
         retriever = vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 4, "lambda_mult": 0.5})
 
         # LLM setup
-        tokenizer = AutoTokenizer.from_pretrained("sshleifer/tiny-gpt2")
-        model = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
-        pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=100)
+        tokenizer = AutoTokenizer.from_pretrained("tiiuae/falcon-rw-1b")
+        model = AutoModelForCausalLM.from_pretrained("tiiuae/falcon-rw-1b")
+        pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=200)
         llm = HuggingFacePipeline(pipeline=pipe)
-
-        # Compression retriever
-        compressor = LLMChainFilter.from_llm(llm)
-        compression_retriever = ContextualCompressionRetriever(base_compressor=compressor, base_retriever=retriever)
 
         # Prompt template
         prompt = PromptTemplate(
             template="""You are a helpful assistant.  
-                        Answer ONLY from the provided transcript context. 
-                        If the context is insufficient, say "I don't know."
+Answer ONLY from the provided transcript context. 
+If the context is insufficient, say "I don't know."
 
-                        Context:
-                        {context}
+Context:
+{context}
 
-                        Question: {question}
-                    """,
+Question: {question}
+""",
             input_variables=["context", "question"]
         )
 
@@ -95,20 +163,20 @@ if video_url:
             response = co.rerank(query=query, documents=candidates, top_n=top_n)
             return [docs[result.index] for result in response.results]
 
-        if question:
+        if generate_button and question:
             with st.spinner("Generating answer..."):
-                
-                # Define Parallel Chain
+                retrieved_docs = retriever.get_relevant_documents(question)
+                reranked_docs = rerank_docs(retrieved_docs, question)
+                context = format_docs(reranked_docs)
+
                 parallel_chain = RunnableParallel({
-                    "context": compression_retriever | RunnableLambda(format_docs),
+                    "context": RunnableLambda(lambda _: context),
                     "question": RunnablePassthrough()
                 })
 
-                # Complete Chain with Prompt and LLM
                 parser = StrOutputParser()
                 main_chain = parallel_chain | prompt | llm | parser
 
-                # Invoke the chain
                 answer = main_chain.invoke(question)
 
                 st.write("### Answer:")
